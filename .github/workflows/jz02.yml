@@ -1,16 +1,16 @@
 #
 # ======================================================================================
-# 最终优化版 GitHub Actions Workflow v2 - by Gemini Pro Deep Reasoning
+# 最终优化版 GitHub Actions Workflow v3 - by Gemini Pro Deep Reasoning
 #
 # 变更日志:
-# v2: 修复了因步骤合并导致的路径解析错误 (`scripts/feeds: No such file or directory`)。
-#     将克隆、Feeds、配置、编译等步骤彻底分离，每个步骤都使用明确的工作目录，
-#     确保脚本在正确的上下文中执行。结构更清晰，更健壮。
+# v3: 解决了 `mkbootimg: command not found` 错误。
+#     在环境初始化步骤中，通过 apt 直接安装 `mkbootimg` 主机工具，
+#     确保在最终镜像打包阶段该命令可用。
 #
 # ======================================================================================
 #
 
-name: Build ImmortalWrt for msm8916 (v2 - Robust Pathing)
+name: JZ02V10 (v3 - mkbootimg Fix)
 
 on:
   workflow_dispatch:
@@ -40,9 +40,10 @@ jobs:
       run: |
         echo "::group::安装核心编译依赖"
         sudo apt-get update
+        # 核心修正：在此处添加 mkbootimg
         sudo apt-get install -y build-essential flex bison g++ gawk gcc-multilib g++-multilib \
         gettext git-core libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev \
-        file wget
+        file wget mkbootimg
         echo "::endgroup::"
 
         echo "::group::清理 Runner 磁盘空间"
@@ -58,14 +59,11 @@ jobs:
         git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
 
     - name: 4. 加载自定义内容 (Load Customizations)
-      # 关键修正：使用 `working-directory` 确保所有命令都在源码目录内执行
       working-directory: ./openwrt
       run: |
         echo "::group::执行自定义脚本 Part 1 (Before Feeds)"
-        # 脚本路径需要从 GITHUB_WORKSPACE 根目录开始
         if [ -f "${{ github.workspace }}/${{ env.DIY_P1_SH }}" ]; then
           chmod +x "${{ github.workspace }}/${{ env.DIY_P1_SH }}"
-          # 在源码目录内执行脚本
           "${{ github.workspace }}/${{ env.DIY_P1_SH }}"
         else
           echo "未找到 diy-part1.sh，跳过。"
@@ -97,7 +95,6 @@ jobs:
           echo "::error::未找到配置文件: ${CONFIG_FILE}！ 编译无法继续。"
           exit 1
         fi
-        # 使用 `make defconfig` 补全配置
         make defconfig
         echo "配置文件已标准化。"
         echo "::endgroup::"
@@ -107,7 +104,7 @@ jobs:
       run: |
         echo "::group::开始预下载所有软件包源码"
         make download -j8
-        find dl -size -1k -exec rm -f {} \; # 删除下载不完整的小文件
+        find dl -size -1k -exec rm -f {} \;
         echo "::endgroup::"
 
     - name: 7. 编译固件 (Compile Firmware)
@@ -129,10 +126,12 @@ jobs:
       if: (failure() || success()) && inputs.ssh_action == 'true'
       uses: mxschmitt/action-tmate@v3
       with:
-        working-directory: ./openwrt # 直接进入源码目录
+        working-directory: ./openwrt
 
     - name: 9. 整理并上传产物 (Upload Artifacts)
       if: success()
+      # 增加一个 id 以便后续引用
+      id: organize
       run: |
         echo "::group::整理并上传固件"
         cd openwrt
@@ -140,7 +139,6 @@ jobs:
         FIRMWARE_PATH="${{ env.FIRMWARE_PATH }}"
         if [ -n "$FIRMWARE_PATH" ]; then
           cp $FIRMWARE_PATH release/
-          # 尝试复制 factory 镜像
           FACTORY_IMG=$(ls bin/targets/msm89xx/msm8916/*-factory.img 2>/dev/null | head -n 1)
           if [ -n "$FACTORY_IMG" ]; then
             cp $FACTORY_IMG release/
@@ -148,15 +146,17 @@ jobs:
           cp .config release/config.buildinfo
           sha256sum release/* > release/sha256sums.txt
           echo "FIRMWARE_RELEASE_DIR=$(pwd)/release" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
         else
           echo "::error::编译成功但未找到 sysupgrade 文件！"
           find bin/targets -type f
+          echo "status=failed" >> $GITHUB_OUTPUT
           exit 1
         fi
         echo "::endgroup::"
       
     - name: 上传到 Actions Artifacts
-      if: success()
+      if: steps.organize.outputs.status == 'success'
       uses: actions/upload-artifact@v4
       with:
         name: ImmortalWrt_Firmware_msm8916_${{ github.run_id }}

@@ -14,7 +14,7 @@
 # ======================================================================================
 #
 
-name: Build ImmortalWrt for msm8916 (Optimized & Robust)
+name: JZ02 ImmortalWrt msm8916 
 
 on:
   # 允许您在 Actions 标签页手动触发此工作流
